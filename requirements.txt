@@ -1,0 +1,35 @@
+# CORE FRAMEWORK
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+pydantic[email]==2.6.1
+pydantic-settings==2.1.0
+python-multipart==0.0.9
+httpx==0.26.0
+python-dotenv==1.0.1
+email-validator==2.1.0
+
+# DATABASE
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.25
+alembic==1.13.1
+
+# CACHE & TASK QUEUE
+redis==5.0.1
+celery[redis]==5.3.6
+flower==2.0.1
+
+# SECURITY
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+cryptography==42.0.2
+
+# UTILITIES
+loguru==0.7.2
+tenacity==8.2.3
+ujson==5.9.0
+orjson==3.9.13
+
+# TESTING
+pytest==8.0.1
+pytest-asyncio==0.23.5

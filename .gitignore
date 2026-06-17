@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+venv/
+env/
+.venv/
+
+# Environment - NEVER COMMIT
+.env
+.env.local
+.env.production
+*.env
+!.env.example
+
+# Secrets
+google-credentials.json
+*.pem
+*.key
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# ML Models
+models_cache/
+*.bin
+*.safetensors
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+tmp/
+temp/
+*.tmp

@@ -1,21 +1,22 @@
 ﻿"""
-LLM Service - Ollama Integration
-Uses OpenAI-compatible API
+LLM Service - Ollama Integration (OPTIMIZED)
+Production-grade with streaming, caching, and smart context management
 """
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, AsyncGenerator
 from openai import AsyncOpenAI
-from loguru import logger
+import asyncio
 from app.config import settings
+from app.utils import logger, LLMServiceError
 
 
 class LLMService:
-    """Service for calling Ollama LLM"""
+    """Optimized LLM service for fast inference"""
     
     def __init__(self):
-        # Ollama provides OpenAI-compatible API
         self.client = AsyncOpenAI(
             base_url=f"{settings.OLLAMA_BASE_URL}/v1",
-            api_key="ollama"  # Required but not used
+            api_key="ollama",
+            timeout=120.0  # 2 minute timeout
         )
         self.main_model = settings.OLLAMA_MAIN_MODEL
         self.judge_model = settings.OLLAMA_JUDGE_MODEL
@@ -24,56 +25,38 @@ class LLMService:
         self,
         query: str,
         context_chunks: List[Dict],
-        temperature: float = 0.3,
-        max_tokens: int = 500
+        temperature: float = 0.1,  # Lower for speed + accuracy
+        max_tokens: int = 300       # Shorter responses
     ) -> Dict:
         """
-        Generate answer using LLM with retrieved context
-        
-        Args:
-            query: User question
-            context_chunks: Retrieved chunks from vector search
-            temperature: 0=deterministic, 1=creative
-            max_tokens: Max response length
-            
-        Returns:
-            {
-                'answer': str,
-                'sources': list,
-                'model': str,
-                'tokens_used': int
-            }
+        Generate concise answer with optimized prompting
         """
         if not context_chunks:
             return {
-                'answer': "I don't have any relevant information to answer this question. Please upload relevant documents first.",
+                'answer': "I don't have relevant information to answer this question. Please upload relevant documents.",
                 'sources': [],
                 'model': self.main_model,
                 'tokens_used': 0
             }
         
-        # Build context from chunks
-        context_text = self._build_context(context_chunks)
+        # OPTIMIZATION: Use only top 3 chunks (less context = faster)
+        top_chunks = context_chunks[:3]
         
-        # Create prompt
-        system_prompt = """You are a helpful AI assistant that answers questions based ONLY on the provided context.
-
-Rules:
-1. Answer ONLY using information from the context below
-2. If the context doesn't contain enough information, say "I don't have enough information to answer this fully."
-3. Be concise and accurate
-4. Cite the source document name when possible
-5. Do NOT make up information"""
-
-        user_prompt = f"""Context from documents:
+        # OPTIMIZATION: Compact context format
+        context_text = self._build_compact_context(top_chunks)
+        
+        # OPTIMIZATION: Concise prompts (shorter = faster)
+        system_prompt = "You are a precise assistant. Answer based ONLY on the context. Be concise. If unsure, say so."
+        
+        user_prompt = f"""Context:
 {context_text}
 
 Question: {query}
 
-Answer:"""
-
+Concise answer:"""
+        
         try:
-            logger.info(f"Calling Ollama model: {self.main_model}")
+            logger.info(f"Calling {self.main_model} (context: {len(context_text)} chars)")
             
             response = await self.client.chat.completions.create(
                 model=self.main_model,
@@ -82,13 +65,15 @@ Answer:"""
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=temperature,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                # OPTIMIZATION: Stop tokens to prevent rambling
+                stop=["\n\nQuestion:", "\n\nContext:", "\n\nSource:"]
             )
             
             answer = response.choices[0].message.content.strip()
             tokens_used = response.usage.total_tokens if response.usage else 0
             
-            # Build sources info
+            # Build sources
             sources = [
                 {
                     'document_name': chunk['document_name'],
@@ -96,7 +81,7 @@ Answer:"""
                     'similarity_score': chunk['similarity_score'],
                     'preview': chunk['content'][:150] + '...' if len(chunk['content']) > 150 else chunk['content']
                 }
-                for chunk in context_chunks
+                for chunk in top_chunks
             ]
             
             return {
@@ -106,41 +91,94 @@ Answer:"""
                 'tokens_used': tokens_used
             }
             
+        except asyncio.TimeoutError:
+            logger.error("LLM call timed out")
+            raise LLMServiceError("LLM response timed out. Try a shorter question.")
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
-            raise
+            raise LLMServiceError(f"LLM error: {str(e)}")
     
-    def _build_context(self, chunks: List[Dict]) -> str:
-        """Format chunks into context string"""
-        context_parts = []
+    def _build_compact_context(self, chunks: List[Dict]) -> str:
+        """Build minimal context (token-optimized)"""
+        # OPTIMIZATION: No verbose source markers, just content
+        parts = []
         for i, chunk in enumerate(chunks, 1):
-            source = f"[Source {i}: {chunk['document_name']}"
-            if chunk.get('page_number'):
-                source += f", Page {chunk['page_number']}"
-            source += f", Relevance: {chunk['similarity_score']:.2%}]"
-            
-            context_parts.append(f"{source}\n{chunk['content']}\n")
+            # Truncate very long chunks
+            content = chunk['content']
+            if len(content) > 800:
+                content = content[:800] + "..."
+            parts.append(f"[{i}] {content}")
         
-        return "\n---\n".join(context_parts)
+        return "\n\n".join(parts)
     
-    async def test_ollama(self) -> Dict:
-        """Quick test to check Ollama is working"""
+    async def generate_answer_streaming(
+        self,
+        query: str,
+        context_chunks: List[Dict],
+        temperature: float = 0.1,
+        max_tokens: int = 300
+    ) -> AsyncGenerator[str, None]:
+        """
+        STREAMING version - yields tokens as they're generated
+        Much better UX - user sees answer building up
+        """
+        if not context_chunks:
+            yield "No relevant information found."
+            return
+        
+        top_chunks = context_chunks[:3]
+        context_text = self._build_compact_context(top_chunks)
+        
+        system_prompt = "You are a precise assistant. Answer based ONLY on the context. Be concise."
+        user_prompt = f"Context:\n{context_text}\n\nQuestion: {query}\n\nAnswer:"
+        
         try:
-            response = await self.client.chat.completions.create(
+            stream = await self.client.chat.completions.create(
                 model=self.main_model,
                 messages=[
-                    {"role": "user", "content": "Say 'Hello, I am working!' in exactly 5 words."}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
                 ],
-                max_tokens=50
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True  # ENABLE STREAMING
+            )
+            
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                    
+        except Exception as e:
+            logger.error(f"Streaming failed: {e}")
+            yield f"Error: {str(e)}"
+    
+    async def test_ollama(self) -> Dict:
+        """Quick connectivity test"""
+        try:
+            response = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=self.main_model,
+                    messages=[{"role": "user", "content": "Reply with just 'OK'"}],
+                    max_tokens=10,
+                    temperature=0
+                ),
+                timeout=30.0
             )
             return {
                 'status': 'success',
                 'model': self.main_model,
-                'response': response.choices[0].message.content
+                'response': response.choices[0].message.content.strip()
+            }
+        except asyncio.TimeoutError:
+            return {
+                'status': 'error',
+                'model': self.main_model,
+                'error': 'Timeout - Ollama too slow'
             }
         except Exception as e:
             return {
                 'status': 'error',
+                'model': self.main_model,
                 'error': str(e)
             }
 

@@ -1,8 +1,9 @@
 ﻿"""
-Smart Query Endpoints with Debug
+Smart Query Endpoints - Production Ready with Groq
 """
 import time
 import json
+from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -122,51 +123,98 @@ async def search_chunks(request: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════
+# 🎯 MAIN RAG QUERY ENDPOINT
+# ═══════════════════════════════════════════════════════
+
 @router.post("/query", response_model=QueryResponse, summary="Smart RAG Query")
 async def query_rag(request: QueryRequest):
-    """Smart query endpoint with intent detection."""
+    """
+    PRODUCTION-GRADE RAG with Smart Routing
+    
+    Logic:
+    1. Quick check: Is this about real-time/general knowledge? → Web first
+    2. Try documents
+    3. If docs found → Use them
+    4. If no docs OR poor answer → Web search
+    """
     start_time = time.time()
     
     try:
         clean_question = validate_query(request.question)
-        logger.info(f"Query: '{clean_question[:80]}'")
+        logger.info(f"📩 Query: '{clean_question[:80]}'")
         
+        # Step 1: Classify intent
         from app.services.query.intent_classifier import intent_classifier
         intent = intent_classifier.classify(clean_question)
-        
-        logger.info(f"Intent classified: {intent['intent']} (use_rag: {intent['use_rag']})")
+        logger.info(f"🎯 Intent: {intent['intent']} | RAG: {intent['use_rag']}")
         
         from app.services.query.llm_service import llm_service
         
         retrieval_time_ms = 0
         retrieved_chunks = []
+        used_web_search = False
         
+        # ⚡ SHORTCUT: Real-time queries go straight to web
+        if _is_realtime_query(clean_question):
+            logger.info("⚡ Real-time query detected → Web search first")
+            return await _handle_web_query(
+                clean_question, intent, llm_service, start_time, request
+            )
+        
+        # Step 2: Document RAG
         if intent['use_rag']:
             retrieval_start = time.time()
-            from app.services.upload.embedder import embedder
-            query_vector = embedder.embed_text(clean_question)
             
-            # INCREASED top_k for better context
-            retrieved_chunks = await chunks.vector_search(
-                query_embedding=query_vector,
-                top_k=request.top_k or 5,  # Was 3, now 5
+            from app.services.query.retrieval_service import retriever
+            
+            retrieved_chunks = await retriever.search(
+                query=clean_question,
+                top_k=request.top_k or 3,
+                similarity_threshold=0.4,  # Higher threshold - only good matches
                 document_id=request.document_id,
-                similarity_threshold=0.3  # Lower threshold
+                use_reranking=True
             )
-            retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
-            logger.info(f"Retrieved {len(retrieved_chunks)} chunks")
             
-            # LOG ACTUAL CHUNKS for debugging
-            for i, chunk in enumerate(retrieved_chunks[:3], 1):
-                logger.info(f"Chunk {i} ({chunk['document_name']} p{chunk.get('page_number')}, score: {chunk['similarity_score']}):")
-                logger.info(f"  Content: {chunk['content'][:200]}...")
+            retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
+            logger.info(f"📚 Retrieved {len(retrieved_chunks)} chunks in {retrieval_time_ms}ms")
+            
+            # Check chunk quality - if all scores low, try web
+            if retrieved_chunks:
+                max_score = max(c.get('rerank_score', c['similarity_score']) for c in retrieved_chunks)
+                if max_score < 0.5:
+                    logger.info(f"⚠️ Low chunk quality ({max_score:.2f}) → Try web")
+                    return await _handle_web_query(
+                        clean_question, intent, llm_service, start_time, request, retrieved_chunks
+                    )
         
+        # Step 3: Generate response
         llm_start = time.time()
+        
+        # No chunks at all + RAG intent → Web fallback
+        if intent['use_rag'] and len(retrieved_chunks) == 0:
+            logger.info("🌐 No documents → Web search fallback")
+            return await _handle_web_query(
+                clean_question, intent, llm_service, start_time, request
+            )
+        
+        # Normal flow
         result = await llm_service.generate_smart_response(
             query=clean_question,
             context_chunks=retrieved_chunks if intent['use_rag'] else None,
             intent=intent
         )
+        
+        # Quality check
+        if (intent['use_rag'] 
+            and len(retrieved_chunks) > 0 
+            and _is_unhelpful_answer(result.get('answer', ''))):
+            
+            logger.info("⚠️ Doc answer unhelpful → Web fallback")
+            return await _handle_web_query(
+                clean_question, intent, llm_service, start_time, request, retrieved_chunks
+            )
+        
         llm_time_ms = int((time.time() - llm_start) * 1000)
         total_time_ms = int((time.time() - start_time) * 1000)
         
@@ -180,7 +228,7 @@ async def query_rag(request: QueryRequest):
             for s in result['sources']
         ]
         
-        logger.info(f"Query done in {total_time_ms}ms (intent: {result.get('intent', 'unknown')})")
+        logger.info(f"✅ Done in {total_time_ms}ms (web: {used_web_search})")
         
         return QueryResponse(
             question=clean_question,
@@ -202,9 +250,149 @@ async def query_rag(request: QueryRequest):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        logger.exception(f"Query failed: {e}")
+        logger.exception(f"❌ Query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+async def _handle_web_query(
+    query: str, 
+    intent: Dict, 
+    llm_service, 
+    start_time: float,
+    request: QueryRequest,
+    fallback_chunks: List = None
+) -> QueryResponse:
+    """Handle web search query"""
+    from app.services.query.web_search import web_search
+    
+    web_start = time.time()
+    web_results = await web_search.search(query, max_results=5)
+    web_time = int((time.time() - web_start) * 1000)
+    
+    logger.info(f"🌐 Web search: {len(web_results)} results in {web_time}ms")
+    
+    language = llm_service.detect_language(query)
+    
+    if web_results and len(web_results) > 0:
+        # Generate response from web
+        result = await llm_service.generate_web_search_response(
+            query=query,
+            web_results=web_results,
+            language=language
+        )
+    else:
+        # No web results - use fallback
+        result = {
+            'answer': _get_no_results_message(language, query),
+            'sources': [],
+            'model': 'fallback',
+            'tokens_used': 0,
+            'language': language,
+            'intent': 'no_results'
+        }
+    
+    total_time_ms = int((time.time() - start_time) * 1000)
+    
+    sources = [
+        SourceInfo(
+            document_name=s.get('document_name', '🌐 Web'),
+            page_number=s.get('page_number'),
+            similarity_score=s.get('similarity_score', 0.8),
+            preview=s.get('preview', '')
+        )
+        for s in result['sources']
+    ]
+    
+    return QueryResponse(
+        question=query,
+        answer=result['answer'],
+        sources=sources,
+        stats=QueryStats(
+            chunks_found=0,
+            model=result['model'],
+            tokens_used=result['tokens_used'],
+            retrieval_time_ms=web_time,
+            llm_time_ms=total_time_ms - web_time,
+            total_time_ms=total_time_ms,
+            cached=False,
+            detected_language=language
+        ),
+        conversation_id=request.conversation_id
+    )
+
+
+def _is_realtime_query(query: str) -> bool:
+    """Check if query needs real-time/web data"""
+    query_lower = query.lower()
+    
+    realtime_keywords = [
+        # Sports
+        'match', 'cricket', 'football', 'score', 'ipl', 'live',
+        'aaj ka match', 'today match', 'live score',
+        
+        # Time-sensitive
+        'today', 'aaj', 'aaj ki', 'current', 'latest', 'news',
+        'weather', 'mausam', 'tapman', 'temperature',
+        
+        # Stock/Finance
+        'stock', 'share price', 'bitcoin', 'crypto', 'rate today',
+        
+        # General current info
+        'who is the', 'kya hai aaj', 'price of', 'cost of',
+        
+        # Search indicators
+        'search', 'find online', 'web pe', 'google',
+    ]
+    
+    for keyword in realtime_keywords:
+        if keyword in query_lower:
+            return True
+    
+    return False
+
+
+def _is_unhelpful_answer(answer: str) -> bool:
+    """Detect unhelpful answers"""
+    if not answer or len(answer.strip()) < 30:
+        return True
+    
+    unhelpful_phrases = [
+        "couldn't find",
+        "could not find",
+        "i don't have",
+        "no information",
+        "not found",
+        "मुझे जानकारी नहीं मिली",
+        "mujhe jankari nahi mili",
+        "मुझे documents में",
+        "mujhe documents mein",
+        "नहीं मिला",
+        "nahi mila",
+        "नहीं मिली",
+        "nahi mili",
+        "i couldn't find",
+    ]
+    
+    answer_lower = answer.lower()
+    matches = sum(1 for phrase in unhelpful_phrases if phrase in answer_lower)
+    
+    return matches > 0
+
+
+def _get_no_results_message(language: str, query: str) -> str:
+    """When no results found anywhere"""
+    if language == 'hindi':
+        return f"माफ कीजिए, मुझे '{query}' के बारे में कोई जानकारी नहीं मिली। कृपया अपना सवाल अलग तरीके से पूछें या ज़्यादा details दें।"
+    elif language == 'hinglish':
+        return f"Sorry, mujhe '{query}' ke baare mein koi information nahi mili. Please apna question alag tareeke se puchein ya zyada details dein."
+    else:
+        return f"Sorry, I couldn't find information about '{query}'. Please try rephrasing or provide more details."
+
+
+
+# ═══════════════════════════════════════════════════════
+# 🌊 STREAMING ENDPOINT
+# ═══════════════════════════════════════════════════════
 
 @router.post("/query/stream", summary="Streaming Smart Query")
 async def query_rag_stream(request: QueryRequest):
@@ -221,14 +409,13 @@ async def query_rag_stream(request: QueryRequest):
                 
                 retrieved_chunks = []
                 if intent['use_rag']:
-                    from app.services.upload.embedder import embedder
-                    query_vector = embedder.embed_text(clean_question)
-                    
-                    retrieved_chunks = await chunks.vector_search(
-                        query_embedding=query_vector,
+                    from app.services.query.retrieval_service import retriever
+                    retrieved_chunks = await retriever.search(
+                        query=clean_question,
                         top_k=request.top_k or 5,
+                        similarity_threshold=0.25,
                         document_id=request.document_id,
-                        similarity_threshold=0.3
+                        use_reranking=True
                     )
                     
                     sources_data = [
@@ -275,38 +462,26 @@ async def query_rag_stream(request: QueryRequest):
 
 
 # ═══════════════════════════════════════════════════════
-# 🐛 DEBUG ENDPOINTS - See what LLM sees
+# 🐛 DEBUG ENDPOINTS
 # ═══════════════════════════════════════════════════════
 
-@router.post("/debug/query", summary="🐛 Debug: See full pipeline")
+@router.post("/debug/query", summary="Debug: See full pipeline")
 async def debug_query(request: QueryRequest):
-    """
-    Debug endpoint - see exactly what LLM receives and returns.
-    Shows:
-    - Retrieved chunks (full content)
-    - Context sent to LLM
-    - Raw LLM response
-    - Final processed answer
-    """
+    """Debug endpoint - see entire pipeline"""
     try:
         clean_question = validate_query(request.question)
         
-        # Step 1: Embedding
-        from app.services.upload.embedder import embedder
-        query_vector = embedder.embed_text(clean_question)
-        
-        # Step 2: Retrieval
-        retrieved_chunks = await chunks.vector_search(
-            query_embedding=query_vector,
-            top_k=10,  # Get more for debug
-            similarity_threshold=0.2
+        from app.services.query.retrieval_service import retriever
+        retrieved_chunks = await retriever.search(
+            query=clean_question,
+            top_k=10,
+            similarity_threshold=0.15,
+            use_reranking=True
         )
         
-        # Step 3: Build context
         from app.services.query.llm_service import llm_service
         context = llm_service._build_clean_context(retrieved_chunks[:5])
         
-        # Step 4: Get raw LLM response
         from app.services.query.intent_classifier import intent_classifier
         intent = intent_classifier.classify(clean_question)
         
@@ -324,8 +499,9 @@ async def debug_query(request: QueryRequest):
                     "rank": i + 1,
                     "document": chunk['document_name'],
                     "page": chunk.get('page_number'),
-                    "score": chunk['similarity_score'],
-                    "content": chunk['content'],  # FULL content
+                    "vector_score": chunk['similarity_score'],
+                    "rerank_score": chunk.get('rerank_score'),
+                    "content": chunk['content'],
                     "content_length": len(chunk['content']),
                 }
                 for i, chunk in enumerate(retrieved_chunks[:5])
@@ -343,9 +519,8 @@ async def debug_query(request: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/debug/document/{document_id}", summary="🐛 Debug: See document chunks")
+@router.get("/debug/document/{document_id}", summary="Debug: See document chunks")
 async def debug_document(document_id: str):
-    """See all chunks for a specific document"""
     try:
         from app.database import db
         rows = await db.fetch("""
@@ -374,17 +549,15 @@ async def debug_document(document_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/debug/search-test", summary="🐛 Debug: Test search relevance")
+@router.get("/debug/search-test", summary="Debug: Test search relevance")
 async def debug_search_test(query: str, top_k: int = 10):
-    """See raw search results with scores"""
     try:
-        from app.services.upload.embedder import embedder
-        query_vector = embedder.embed_text(query)
-        
-        results = await chunks.vector_search(
-            query_embedding=query_vector,
+        from app.services.query.retrieval_service import retriever
+        results = await retriever.search(
+            query=query,
             top_k=top_k,
-            similarity_threshold=0.1
+            similarity_threshold=0.1,
+            use_reranking=True
         )
         
         return {
@@ -395,7 +568,8 @@ async def debug_search_test(query: str, top_k: int = 10):
                     "rank": i + 1,
                     "document": r['document_name'],
                     "page": r.get('page_number'),
-                    "score": r['similarity_score'],
+                    "vector_score": r['similarity_score'],
+                    "rerank_score": r.get('rerank_score'),
                     "content_preview": r['content'][:300],
                     "content_length": len(r['content']),
                 }

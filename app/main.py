@@ -41,8 +41,8 @@ async def lifespan(app: FastAPI):
     
     logger.info("=" * 60)
     logger.info("RAG System started successfully")
-    logger.info(f"API Docs: http://localhost:8000/docs")
-    logger.info(f"WhatsApp Webhook: http://localhost:8000/webhook/whatsapp")
+    logger.info(f"API Docs: http://localhost:8001/docs")
+    logger.info(f"WhatsApp Webhook: http://localhost:8001/webhook/whatsapp")
     logger.info("=" * 60)
     
     yield

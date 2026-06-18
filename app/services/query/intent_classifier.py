@@ -356,7 +356,22 @@ class IntentClassifier:
             return cls._make_intent('rejection', False, 0.9, language_hint, 'direct')
         
         # ─── CONFUSION ───
-        if cls._matches_any(query_clean, cls.CONFUSION) and word_count <= 5:
+        confusion_only_words = {'what', 'wat', 'whaat', 'kya', 'kyaa', 'kya bola', 
+                                'samjha nahi', 'samjhi nahi', 'samajh nahi aaya',
+                                'i dont understand', "i don't understand", 
+                                'didnt understand', "didn't understand", 
+                                'confused', 'confuse ho gaya', 'repeat', 
+                                'phir se bolo', 'dobara bolo', 'fir bolo',
+                                'samjhao', 'explain again',
+                                'क्या', 'समझा नहीं', 'समझ नहीं आया', 'फिर से बोलो'}
+
+        # Only trigger confusion if EXACT match (not part of longer question)
+        if query_clean in confusion_only_words:
+            return cls._make_intent('confusion', False, 0.85, language_hint, 'direct')
+
+        # Don't trigger confusion if query has question pattern
+        has_question = any(word in query_clean for word in ['is', 'are', 'was', 'were', 'will', 'do', 'does', 'can', 'should'])
+        if cls._matches_any(query_clean, cls.CONFUSION) and word_count <= 3 and not has_question:
             return cls._make_intent('confusion', False, 0.85, language_hint, 'direct')
         
         # ─── JOKES ───
@@ -391,7 +406,7 @@ class IntentClassifier:
             return cls._make_intent('document_query', True, 0.85, language_hint, 'rag')
         
         # ─── DEFAULT: Document query for meaningful questions ───
-        if word_count >= 3:
+        if word_count >= 2:
             return cls._make_intent('document_query', True, 0.6, language_hint, 'rag')
         
         # Short queries = general chat
@@ -456,11 +471,37 @@ class IntentClassifier:
     
     @classmethod
     def _is_document_query(cls, query: str, word_count: int) -> bool:
-        """Check document query"""
-        for keyword in cls.DOCUMENT_KEYWORDS:
+        """Check document query - IMPROVED"""
+        
+        # Strong document indicators (always RAG)
+        strong_doc_keywords = [
+            'document', 'pdf', 'file', 'documents', 'docs', 'sheet', 'excel',
+            'mentioned in', 'according to', 'based on', 'as per',
+            'mere documents', 'documents mein', 'pdf mein', 'file mein', 'sheet mein',
+            'दस्तावेज़', 'फाइल', 'पीडीएफ',
+            'summarize', 'summary', 'overview',
+        ]
+        
+        for keyword in strong_doc_keywords:
             if keyword in query:
                 return True
         
+        # Topic-based keywords (likely RAG)
+        topic_keywords = [
+            'policy', 'rule', 'rules', 'company', 'employee', 'salary',
+            'office', 'timing', 'working', 'leave', 'tracker', 'team',
+            'project', 'task', 'work', 'study', 'degree', 'experience',
+            'skills', 'resume', 'cv', 'hr', 'privacy', 'terms',
+            'staff', 'department', 'training', 'benefit', 'holiday',
+            'pranati', 'ravi', 'divyanshu', 'name',  # Person queries
+            'infosware', 'company', 'organization',
+        ]
+        
+        for keyword in topic_keywords:
+            if keyword in query:
+                return True
+        
+        # Question patterns (Hindi + English)
         question_patterns = [
             r'^(what|who|when|where|why|how|which|whose)\s',
             r'^(kya|kaun|kab|kahan|kyu|kyun|kaise|kis|kitne|kitna)\s',
@@ -470,11 +511,21 @@ class IntentClassifier:
             r'describe\s+',
             r'batao\s+',
             r'samjhao\s+',
+            r'bata\s+',
+            r'list\s+',
+            r'show\s+',
+            r'find\s+',
+            r'search\s+',
+            r'\bke baare\b',  # "ke baare mein"
+            r'\bka matlab\b',
+            r'\bki jankari\b',
+            r'\bkya h\b',  # "kya hai"
+            r'\bkya hai\b',
         ]
         
         for pattern in question_patterns:
-            if re.search(pattern, query):
-                return word_count >= 3
+            if re.search(pattern, query, re.IGNORECASE):
+                return word_count >= 2  # Was 3, now 2 (more lenient)
         
         return False
     

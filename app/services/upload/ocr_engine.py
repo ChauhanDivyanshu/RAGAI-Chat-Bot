@@ -179,6 +179,5 @@ class OCREngine:
         # Can be enhanced to test multiple languages
         return "en"
 
-
 # Global instance
 ocr_engine = OCREngine()

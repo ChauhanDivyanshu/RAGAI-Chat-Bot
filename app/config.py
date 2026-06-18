@@ -41,11 +41,27 @@ class Settings(BaseSettings):
     CLOUDFLARE_R2_BUCKET: str = "rag-documents"
     CLOUDFLARE_R2_PUBLIC_URL: str = ""
 
-    # Ollama
+    # ═══════════════════════════════════════════
+    # 🤖 OLLAMA - UPGRADED MODELS
+    # ═══════════════════════════════════════════
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MAIN_MODEL: str = "llama3.1:8b"
-    OLLAMA_JUDGE_MODEL: str = "qwen2.5:7b"
+    
+    # 🔥 BEST for Hindi + English + Hinglish (8B params)
+    OLLAMA_MAIN_MODEL: str = "llama3.2:3b"
+    
+    # Backup judge model
+    OLLAMA_JUDGE_MODEL: str = "llama3.1:8b"
+    
     OLLAMA_TIMEOUT: int = 120
+
+    # Add in Settings class:
+    TAVILY_API_KEY: str = ""
+    USE_TAVILY: bool = True
+
+    # ⚡ GROQ Configuration
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    USE_GROQ: bool = False
 
     # ML Models
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
@@ -73,17 +89,21 @@ class Settings(BaseSettings):
     MAX_IMAGE_SIZE: int = 20971520
     MAX_CSV_SIZE: int = 52428800
 
-    # Chunking
-    CHUNK_SIZE: int = 512
-    CHUNK_OVERLAP: int = 50
+    # ═══════════════════════════════════════════
+    # 📝 CHUNKING - OPTIMIZED
+    # ═══════════════════════════════════════════
+    CHUNK_SIZE: int = 512          # Sweet spot for BGE-M3
+    CHUNK_OVERLAP: int = 128       # 25% overlap (better context preservation)
 
-    # Retrieval
-    RETRIEVAL_TOP_K_SIMPLE: int = 3
-    RETRIEVAL_TOP_K_MODERATE: int = 5
+    # ═══════════════════════════════════════════
+    # 🎯 RETRIEVAL - TUNED FOR ACCURACY
+    # ═══════════════════════════════════════════
+    RETRIEVAL_TOP_K_SIMPLE: int = 5      # Was 3
+    RETRIEVAL_TOP_K_MODERATE: int = 7    # Was 5
     RETRIEVAL_TOP_K_COMPLEX: int = 10
     RETRIEVAL_CANDIDATES: int = 30
-    SIMILARITY_THRESHOLD: float = 0.5
-    CONTEXT_MAX_TOKENS: int = 2000
+    SIMILARITY_THRESHOLD: float = 0.25   # Lower for better recall
+    CONTEXT_MAX_TOKENS: int = 3000       # Increased from 2000
 
     # Cache TTL
     QUERY_CACHE_TTL: int = 3600

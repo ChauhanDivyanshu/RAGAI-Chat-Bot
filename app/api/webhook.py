@@ -195,7 +195,7 @@ _"PDF mein kya likha hai?"_"""
             doc_count = await documents.count_documents()
             chunk_count = await chunks.count_chunks()
             
-            stats_msg = f"""📊 *System Stats*
+            stats_msg = f""" *System Stats*
 
 📄 Total Documents: {doc_count}
 🧩 Total Chunks: {chunk_count}
@@ -376,7 +376,7 @@ async def process_uploaded_file(from_number: str, filename: str, content: bytes,
         if existing:
             await whatsapp.send_text(
                 from_number,
-                f"✅ Already in knowledge base!\n📄 _{existing['original_name']}_\n\nAsk me anything about it!"
+                f" Already in knowledge base!\n _{existing['original_name']}_\n\nAsk me anything about it!"
             )
             return
         
@@ -391,7 +391,7 @@ async def process_uploaded_file(from_number: str, filename: str, content: bytes,
         if not extraction['full_text'] or len(extraction['full_text'].strip()) < 10:
             await whatsapp.send_text(
                 from_number,
-                "❌ Couldn't extract text from this file. Try a different file."
+                " Couldn't extract text from this file. Try a different file."
             )
             return
         
@@ -424,13 +424,13 @@ async def process_uploaded_file(from_number: str, filename: str, content: bytes,
         await documents.update_status(doc_id, "completed")
         
         # Send success message
-        success_msg = f"""✅ *Document Processed!*
+        success_msg = f""" *Document Processed!*
 
-📄 *{filename}*
-📊 Size: {format_file_size(file_size)}
-📑 Pages: {extraction['total_pages']}
-🧩 Chunks: {saved}
-🔤 Words: {word_count(extraction['full_text'])}
+ *{filename}*
+ Size: {format_file_size(file_size)}
+ Pages: {extraction['total_pages']}
+ Chunks: {saved}
+ Words: {word_count(extraction['full_text'])}
 
 💬 Now you can ask me anything about this document!
 

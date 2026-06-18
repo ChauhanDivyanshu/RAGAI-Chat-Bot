@@ -1,0 +1,17 @@
+RAG System Test Document - TXT Format
+
+This is a plain text file testing our RAG system TXT parser capability.
+
+Section 1: Introduction
+The RAG (Retrieval Augmented Generation) system processes various file formats.
+It supports PDF, DOCX, XLSX, CSV, TXT, HTML, and Markdown files.
+
+Section 2: Features
+- Multilingual support with BGE-M3 embeddings
+- Vector search using pgvector
+- Fast LLM responses with Llama 3.2 1B model
+- Production-grade error handling
+
+Section 3: Performance
+The system delivers answers in 10-30 seconds on CPU.
+With GPU, response time drops to 1-3 seconds.

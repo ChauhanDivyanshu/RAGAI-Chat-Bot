@@ -1,5 +1,5 @@
 ﻿"""
-Query & Search Endpoints (RAG) - OPTIMIZED
+Smart Query Endpoints with Debug
 """
 import time
 import json
@@ -20,17 +20,11 @@ from app.utils import logger, validate_query
 router = APIRouter(tags=["Query & Search"])
 
 
-# ─────────────────────────────────────
-# EMBEDDING TEST ENDPOINTS
-# ─────────────────────────────────────
-
 @router.post("/embed/test", response_model=EmbedResponse)
 async def test_embedding(request: EmbedRequest):
-    """Generate embedding for text (1024-dim vector)"""
     try:
         from app.services.upload.embedder import embedder
         vector = embedder.embed_text(request.text)
-        
         return EmbedResponse(
             text=request.text,
             embedding_dimension=len(vector),
@@ -38,16 +32,13 @@ async def test_embedding(request: EmbedRequest):
             last_5_values=vector[-5:]
         )
     except Exception as e:
-        logger.error(f"Embedding test failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/embed/similarity", response_model=SimilarityResponse)
 async def test_similarity(request: SimilarityRequest):
-    """Compare semantic similarity between two texts"""
     try:
         from app.services.upload.embedder import embedder
-        
         vec1 = embedder.embed_text(request.text1)
         vec2 = embedder.embed_text(request.text2)
         similarity = embedder.cosine_similarity(vec1, vec2)
@@ -69,13 +60,8 @@ async def test_similarity(request: SimilarityRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─────────────────────────────────────
-# OLLAMA TEST
-# ─────────────────────────────────────
-
 @router.get("/test-ollama", response_model=OllamaTestResponse)
 async def test_ollama():
-    """Test Ollama connectivity"""
     try:
         from app.services.query.llm_service import llm_service
         result = await llm_service.test_ollama()
@@ -88,13 +74,9 @@ async def test_ollama():
         )
 
 
-# ─────────────────────────────────────
-# SEARCH ENDPOINT
-# ─────────────────────────────────────
-
 @router.post("/search", response_model=SearchResponse)
 async def search_chunks(request: SearchRequest):
-    """Vector search without LLM (fast)"""
+    """Vector search without LLM"""
     start_time = time.time()
     
     try:
@@ -140,62 +122,50 @@ async def search_chunks(request: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─────────────────────────────────────
-# MAIN RAG QUERY (OPTIMIZED)
-# ─────────────────────────────────────
-
-@router.post("/query", response_model=QueryResponse, summary="RAG Query (full response)")
+@router.post("/query", response_model=QueryResponse, summary="Smart RAG Query")
 async def query_rag(request: QueryRequest):
-    """
-    Main RAG endpoint - returns complete answer.
-    
-    For better UX on slow systems, use /query/stream instead.
-    """
+    """Smart query endpoint with intent detection."""
     start_time = time.time()
     
     try:
         clean_question = validate_query(request.question)
         logger.info(f"Query: '{clean_question[:80]}'")
         
-        # OPTIMIZATION: Reduce top_k for faster LLM
-        actual_top_k = min(request.top_k or 5, 3)  # Max 3 chunks
+        from app.services.query.intent_classifier import intent_classifier
+        intent = intent_classifier.classify(clean_question)
         
-        # Retrieval
-        retrieval_start = time.time()
-        from app.services.upload.embedder import embedder
-        query_vector = embedder.embed_text(clean_question)
+        logger.info(f"Intent classified: {intent['intent']} (use_rag: {intent['use_rag']})")
         
-        retrieved_chunks = await chunks.vector_search(
-            query_embedding=query_vector,
-            top_k=actual_top_k,
-            document_id=request.document_id
-        )
-        retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
-        
-        if not retrieved_chunks:
-            total_time_ms = int((time.time() - start_time) * 1000)
-            return QueryResponse(
-                question=clean_question,
-                answer="No relevant information found in uploaded documents.",
-                sources=[],
-                stats=QueryStats(
-                    chunks_found=0,
-                    model=settings.OLLAMA_MAIN_MODEL,
-                    tokens_used=0,
-                    retrieval_time_ms=retrieval_time_ms,
-                    llm_time_ms=0,
-                    total_time_ms=total_time_ms,
-                    cached=False
-                )
-            )
-        
-        # LLM Generation
-        llm_start = time.time()
         from app.services.query.llm_service import llm_service
-        result = await llm_service.generate_answer(
+        
+        retrieval_time_ms = 0
+        retrieved_chunks = []
+        
+        if intent['use_rag']:
+            retrieval_start = time.time()
+            from app.services.upload.embedder import embedder
+            query_vector = embedder.embed_text(clean_question)
+            
+            # INCREASED top_k for better context
+            retrieved_chunks = await chunks.vector_search(
+                query_embedding=query_vector,
+                top_k=request.top_k or 5,  # Was 3, now 5
+                document_id=request.document_id,
+                similarity_threshold=0.3  # Lower threshold
+            )
+            retrieval_time_ms = int((time.time() - retrieval_start) * 1000)
+            logger.info(f"Retrieved {len(retrieved_chunks)} chunks")
+            
+            # LOG ACTUAL CHUNKS for debugging
+            for i, chunk in enumerate(retrieved_chunks[:3], 1):
+                logger.info(f"Chunk {i} ({chunk['document_name']} p{chunk.get('page_number')}, score: {chunk['similarity_score']}):")
+                logger.info(f"  Content: {chunk['content'][:200]}...")
+        
+        llm_start = time.time()
+        result = await llm_service.generate_smart_response(
             query=clean_question,
-            context_chunks=retrieved_chunks,
-            temperature=request.temperature or 0.1
+            context_chunks=retrieved_chunks if intent['use_rag'] else None,
+            intent=intent
         )
         llm_time_ms = int((time.time() - llm_start) * 1000)
         total_time_ms = int((time.time() - start_time) * 1000)
@@ -210,7 +180,7 @@ async def query_rag(request: QueryRequest):
             for s in result['sources']
         ]
         
-        logger.info(f"Query done in {total_time_ms}ms (retrieval: {retrieval_time_ms}ms, LLM: {llm_time_ms}ms)")
+        logger.info(f"Query done in {total_time_ms}ms (intent: {result.get('intent', 'unknown')})")
         
         return QueryResponse(
             question=clean_question,
@@ -223,7 +193,8 @@ async def query_rag(request: QueryRequest):
                 retrieval_time_ms=retrieval_time_ms,
                 llm_time_ms=llm_time_ms,
                 total_time_ms=total_time_ms,
-                cached=False
+                cached=False,
+                detected_language=result.get('language', 'english')
             ),
             conversation_id=request.conversation_id
         )
@@ -235,64 +206,51 @@ async def query_rag(request: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─────────────────────────────────────
-# STREAMING RAG QUERY (BETTER UX)
-# ─────────────────────────────────────
-
-@router.post("/query/stream", summary="RAG Query (streaming response)")
+@router.post("/query/stream", summary="Streaming Smart Query")
 async def query_rag_stream(request: QueryRequest):
-    """
-    STREAMING RAG endpoint - tokens stream as generated.
-    
-    Better UX for slow LLMs - user sees answer building up.
-    Returns Server-Sent Events (SSE).
-    """
+    """Streaming version"""
     try:
         clean_question = validate_query(request.question)
-        logger.info(f"Streaming query: '{clean_question[:80]}'")
         
         async def event_generator():
             try:
-                # Send start event
                 yield f"data: {json.dumps({'type': 'start', 'question': clean_question})}\n\n"
                 
-                # Retrieval
-                from app.services.upload.embedder import embedder
-                query_vector = embedder.embed_text(clean_question)
+                from app.services.query.intent_classifier import intent_classifier
+                intent = intent_classifier.classify(clean_question)
                 
-                actual_top_k = min(request.top_k or 5, 3)
-                retrieved_chunks = await chunks.vector_search(
-                    query_embedding=query_vector,
-                    top_k=actual_top_k,
-                    document_id=request.document_id
+                retrieved_chunks = []
+                if intent['use_rag']:
+                    from app.services.upload.embedder import embedder
+                    query_vector = embedder.embed_text(clean_question)
+                    
+                    retrieved_chunks = await chunks.vector_search(
+                        query_embedding=query_vector,
+                        top_k=request.top_k or 5,
+                        document_id=request.document_id,
+                        similarity_threshold=0.3
+                    )
+                    
+                    sources_data = [
+                        {
+                            'document_name': c['document_name'],
+                            'page_number': c.get('page_number'),
+                            'similarity_score': c['similarity_score']
+                        }
+                        for c in retrieved_chunks
+                    ]
+                    yield f"data: {json.dumps({'type': 'sources', 'data': sources_data})}\n\n"
+                
+                from app.services.query.llm_service import llm_service
+                result = await llm_service.generate_smart_response(
+                    query=clean_question,
+                    context_chunks=retrieved_chunks if intent['use_rag'] else None,
+                    intent=intent
                 )
                 
-                # Send sources event
-                sources_data = [
-                    {
-                        'document_name': c['document_name'],
-                        'page_number': c.get('page_number'),
-                        'similarity_score': c['similarity_score']
-                    }
-                    for c in retrieved_chunks
-                ]
-                yield f"data: {json.dumps({'type': 'sources', 'data': sources_data})}\n\n"
+                for char in result['answer']:
+                    yield f"data: {json.dumps({'type': 'token', 'content': char})}\n\n"
                 
-                if not retrieved_chunks:
-                    yield f"data: {json.dumps({'type': 'answer', 'content': 'No relevant information found.'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                    return
-                
-                # Stream LLM response
-                from app.services.query.llm_service import llm_service
-                async for token in llm_service.generate_answer_streaming(
-                    query=clean_question,
-                    context_chunks=retrieved_chunks,
-                    temperature=request.temperature or 0.1
-                ):
-                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
-                
-                # Send done event
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 
             except Exception as e:
@@ -312,5 +270,137 @@ async def query_rag_stream(request: QueryRequest):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        logger.exception(f"Stream query failed: {e}")
+        logger.exception(f"Stream failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════
+# 🐛 DEBUG ENDPOINTS - See what LLM sees
+# ═══════════════════════════════════════════════════════
+
+@router.post("/debug/query", summary="🐛 Debug: See full pipeline")
+async def debug_query(request: QueryRequest):
+    """
+    Debug endpoint - see exactly what LLM receives and returns.
+    Shows:
+    - Retrieved chunks (full content)
+    - Context sent to LLM
+    - Raw LLM response
+    - Final processed answer
+    """
+    try:
+        clean_question = validate_query(request.question)
+        
+        # Step 1: Embedding
+        from app.services.upload.embedder import embedder
+        query_vector = embedder.embed_text(clean_question)
+        
+        # Step 2: Retrieval
+        retrieved_chunks = await chunks.vector_search(
+            query_embedding=query_vector,
+            top_k=10,  # Get more for debug
+            similarity_threshold=0.2
+        )
+        
+        # Step 3: Build context
+        from app.services.query.llm_service import llm_service
+        context = llm_service._build_clean_context(retrieved_chunks[:5])
+        
+        # Step 4: Get raw LLM response
+        from app.services.query.intent_classifier import intent_classifier
+        intent = intent_classifier.classify(clean_question)
+        
+        result = await llm_service.generate_smart_response(
+            query=clean_question,
+            context_chunks=retrieved_chunks[:5],
+            intent=intent
+        )
+        
+        return {
+            "question": clean_question,
+            "intent": intent,
+            "retrieved_chunks": [
+                {
+                    "rank": i + 1,
+                    "document": chunk['document_name'],
+                    "page": chunk.get('page_number'),
+                    "score": chunk['similarity_score'],
+                    "content": chunk['content'],  # FULL content
+                    "content_length": len(chunk['content']),
+                }
+                for i, chunk in enumerate(retrieved_chunks[:5])
+            ],
+            "context_sent_to_llm": context,
+            "context_length": len(context),
+            "llm_response": result['answer'],
+            "model_used": result['model'],
+            "tokens_used": result['tokens_used'],
+            "language_detected": result.get('language'),
+        }
+        
+    except Exception as e:
+        logger.exception("Debug failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/debug/document/{document_id}", summary="🐛 Debug: See document chunks")
+async def debug_document(document_id: str):
+    """See all chunks for a specific document"""
+    try:
+        from app.database import db
+        rows = await db.fetch("""
+            SELECT id, content, chunk_index, page_number, token_count
+            FROM chunks
+            WHERE document_id = $1::uuid
+            ORDER BY chunk_index
+        """, document_id)
+        
+        return {
+            "document_id": document_id,
+            "total_chunks": len(rows),
+            "chunks": [
+                {
+                    "id": str(row['id']),
+                    "chunk_index": row['chunk_index'],
+                    "page_number": row['page_number'],
+                    "token_count": row['token_count'],
+                    "content": row['content'],
+                    "content_length": len(row['content']),
+                }
+                for row in rows
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/debug/search-test", summary="🐛 Debug: Test search relevance")
+async def debug_search_test(query: str, top_k: int = 10):
+    """See raw search results with scores"""
+    try:
+        from app.services.upload.embedder import embedder
+        query_vector = embedder.embed_text(query)
+        
+        results = await chunks.vector_search(
+            query_embedding=query_vector,
+            top_k=top_k,
+            similarity_threshold=0.1
+        )
+        
+        return {
+            "query": query,
+            "total_results": len(results),
+            "results": [
+                {
+                    "rank": i + 1,
+                    "document": r['document_name'],
+                    "page": r.get('page_number'),
+                    "score": r['similarity_score'],
+                    "content_preview": r['content'][:300],
+                    "content_length": len(r['content']),
+                }
+                for i, r in enumerate(results)
+            ]
+        }
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

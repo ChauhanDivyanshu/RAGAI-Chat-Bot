@@ -99,7 +99,7 @@ export function Sidebar() {
         initial={false}
         animate={{ x: isOpen ? 0 : 0 }}
         className={cn(
-          "fixed md:relative z-40 h-full w-75 md:w-75 lg:w-75a",
+          "fixed md:relative z-38 h-full w-80 md:w-80 lg:w-80a",
           "flex flex-col border-r border-border/40 glass-strong",
           "transition-transform duration-300",
           isOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"

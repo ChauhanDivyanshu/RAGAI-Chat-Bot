@@ -97,3 +97,8 @@ cloudflared.exe
 .vscode/
 
 cloudflared.exe
+
+# Secrets
+google-credentials.json
+*.pem
+*.key
